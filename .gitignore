@@ -1,0 +1,7 @@
+course_data.json
+*.pdf
+*.env
+*.db
+.env
+uploads/
+*/__pycache__/
