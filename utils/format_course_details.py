@@ -43,15 +43,20 @@ def format_course(course):
             
             course_dict["meeting_times"].append(meeting_time)
         
-    maximum_enrollment = course["maximumEnrollment"]
-    current_enrollment = course["enrollment"]
+
+    maximum_enrollment = course.get("maximumEnrollment", 0)
+    current_enrollment = course.get("enrollment", 0)
     
+    # 🚨 THE FIX: Inject the missing data into the dictionary so React can see it! 🚨
+    course_dict["maximum_enrollment"] = maximum_enrollment
+    course_dict["seats_available"] = course.get("seatsAvailable", 0)
+    
+    # Keep the existing logic for waitlists and "Full" status
     if maximum_enrollment == current_enrollment:
         course_dict["enrollment_is_full"] = True
-        course_dict["wait_count"] = course["waitCount"]
-        course_dict["wait_capacity"] = course["waitCapacity"]
+        course_dict["wait_count"] = course.get("waitCount", 0)
+        course_dict["wait_capacity"] = course.get("waitCapacity", 0)
     else:
         course_dict["enrollment_is_full"] = False
-        
         
     return course_dict
