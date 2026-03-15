@@ -1,29 +1,30 @@
+#!/usr/bin/env bash
+# exit on error
 set -o errexit
 
+# 1. Install your Python requirements first
+pip install -r requirements.txt
+
+# 2. Define the exact Render path your Python code is looking for
 STORAGE_DIR=/opt/render/project/.render
-CHROME_VERSION=138.0.7204.92
-CHROME_DIR=$STORAGE_DIR/chrome
 
-if [[ ! -d $CHROME_DIR ]]; then
-  echo "...Downloading Chrome for Testing"
-  mkdir -p $CHROME_DIR
-  cd $CHROME_DIR
-
-  # Download and unzip Chrome binary
-  wget https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chrome-linux64.zip
+if [[ ! -d $STORAGE_DIR/chrome ]]; then
+  echo "...Downloading Chrome and ChromeDriver"
+  mkdir -p $STORAGE_DIR/chrome
+  cd $STORAGE_DIR/chrome
+  
+  # Download Chrome for Testing
+  wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chrome-linux64.zip
   unzip chrome-linux64.zip
-  rm chrome-linux64.zip
-
-  # Download and unzip ChromeDriver
-  wget https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chromedriver-linux64.zip
+  mv chrome-linux64/chrome ./
+  
+  # Download ChromeDriver
+  wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chromedriver-linux64.zip
   unzip chromedriver-linux64.zip
-  rm chromedriver-linux64.zip
-
-  # Optional: symlink for easier access
-  ln -sf "$CHROME_DIR/chrome-linux64/chrome" "$CHROME_DIR/chrome"
-  ln -sf "$CHROME_DIR/chromedriver-linux64/chromedriver" "$CHROME_DIR/chromedriver"
-
-  cd $HOME/project/src  # Return to project directory
+  mv chromedriver-linux64/chromedriver ./
+  
+  # Clean up the zip files
+  rm -rf chrome-linux64 chrome-linux64.zip chromedriver-linux64 chromedriver-linux64.zip
 else
-  echo "...Using Chrome from cache"
+  echo "...Chrome is already installed in the cache"
 fi
