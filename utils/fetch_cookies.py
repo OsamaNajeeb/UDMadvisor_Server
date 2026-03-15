@@ -13,7 +13,7 @@ import os
 
 def fetch_cookies(term_name: str):
     current_app.logger.info("Fetching cookies...")
-    # Define the environment for the scraper
+# Define the environment for the scraper
     chrome_options = Options()
     
     chrome_options.add_argument("--no-sandbox")  
@@ -21,6 +21,11 @@ def fetch_cookies(term_name: str):
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--enable-logging")
+    
+    # --- NEW FIXES FOR RENDER CLOUD ---
+    chrome_options.add_argument("--remote-debugging-port=9222") # Forces Chrome to communicate on an open port
+    chrome_options.add_argument("--disable-setuid-sandbox")     # Bypasses strict Linux security sandboxing
+    chrome_options.add_argument("--user-data-dir=/tmp/chrome-data") # Forces Chrome to save temp data in the unlocked /tmp folder
 
     chrome_options.binary_location = os.getenv("CHROME_PATH", "/opt/render/project/.render/chrome/chrome")
 
