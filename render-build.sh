@@ -5,26 +5,29 @@ set -o errexit
 # 1. Install your Python requirements first
 pip install -r requirements.txt
 
-# 2. Define the exact Render path your Python code is looking for
+# 2. Define the exact Render path
 STORAGE_DIR=/opt/render/project/.render
 
-if [[ ! -d $STORAGE_DIR/chrome ]]; then
-  echo "...Downloading Chrome and ChromeDriver"
-  mkdir -p $STORAGE_DIR/chrome
-  cd $STORAGE_DIR/chrome
-  
-  # Download Chrome for Testing
-  wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chrome-linux64.zip
-  unzip chrome-linux64.zip
-  mv chrome-linux64/chrome ./
-  
-  # Download ChromeDriver
-  wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chromedriver-linux64.zip
-  unzip chromedriver-linux64.zip
-  mv chromedriver-linux64/chromedriver ./
-  
-  # Clean up the zip files
-  rm -rf chrome-linux64 chrome-linux64.zip chromedriver-linux64 chromedriver-linux64.zip
-else
-  echo "...Chrome is already installed in the cache"
-fi
+# 3. Forcibly delete the old Chrome folder so Render downloads a fresh copy
+rm -rf $STORAGE_DIR/chrome
+
+echo "...Downloading Chrome and ChromeDriver"
+mkdir -p $STORAGE_DIR/chrome
+cd $STORAGE_DIR/chrome
+
+# Download Chrome for Testing
+wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chrome-linux64.zip
+unzip chrome-linux64.zip
+mv chrome-linux64/* ./
+
+# Download ChromeDriver
+wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.94/linux64/chromedriver-linux64.zip
+unzip chromedriver-linux64.zip
+mv chromedriver-linux64/chromedriver ./
+
+# --- THE FIX: Grant the cloud server permission to run these files! ---
+chmod +x ./chrome
+chmod +x ./chromedriver
+
+# Clean up the zip files and empty folders
+rm -rf chrome-linux64 chrome-linux64.zip chromedriver-linux64 chromedriver-linux64.zip
