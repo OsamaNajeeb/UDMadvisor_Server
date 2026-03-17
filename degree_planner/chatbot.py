@@ -12,7 +12,7 @@ chat_client = OpenAI(
     base_url="https://router.huggingface.co/v1"
 )
 
-model = "openai/gpt-oss-20b:nebius"
+model = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
 chatbot_blueprint = Blueprint('chat', __name__, url_prefix="/api")
 
