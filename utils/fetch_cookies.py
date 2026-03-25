@@ -110,30 +110,24 @@ def fetch_cookies_from_cache(term_name: str):
             cache_data = json.load(cache_file)
             
             if term_name not in cache_data:
-                raise Exception("")
+                raise Exception(f"{term_name} not found in cache")
             
             return cache_data[term_name]
     except Exception as e:
-        print(e)
-        fetch_cookies(term_name)
+        print(f"Cache miss or error: {e}")
+        
+        # FIX 1: Actually save the scraped data into the 'cookies' variable!
+        cookies = fetch_cookies(term_name)
+        
         if not cookies:
             print("There was an error fetching the cookies")
             return [], 400
         
-        print("Cookies have been fetched pushing through the error...")
+        print("Cookies have been fetched, pushing through the error...")
             
-        cookies_parsed = {cookie["name"]: cookie["value"] for cookie in cookies}
-        
-        AWSALB = cookies_parsed.get("AWSALB", "")
-        AWSALBCORS = cookies_parsed.get("AWSALBCORS", "")
-        JSESSIONID = cookies_parsed.get("JSESSIONID", "")
-        
-        cookies = {
-            "AWSALB":  AWSALB,
-            "AWSALBCORS": AWSALBCORS,
-            "JSESSIONID":  JSESSIONID,
-        } 
-        
+        # FIX 2: We deleted the redundant parsing block here. 
+        # The fetch_cookies() function above already formats the dictionary perfectly.
+        # Trying to parse it a second time would cause a Python TypeError!
         return cookies
         
     
