@@ -31,7 +31,7 @@ def fetch_courses_weekly():
         term_name = term['description']
         
         term_name = term_name.replace(" (View Only)", "")
-        cookies = fetch_cookies(term_name=term_name, driver_executable_path="chromedriver-linux64/chromedriver")
+        cookies = fetch_cookies(term_name=term_name)
         print("Cookies fetched")
         
         # Format term name

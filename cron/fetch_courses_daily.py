@@ -30,7 +30,7 @@ def fetch_courses_daily():
         term_code = term['code']
         term_name = term['description']
         
-        cookies = fetch_cookies(term_name=term_name, driver_executable_path="chromedriver-linux64/chromedriver")
+        cookies = fetch_cookies(term_name=term_name)
         print("Cookies fetched")
         
         # Format term name
