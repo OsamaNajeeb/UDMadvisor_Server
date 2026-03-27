@@ -100,8 +100,10 @@ def send_feedback():
             return "Mailgun configuration not set", 500
         
         resp = requests.post(MAILGUN_API_URL, auth=("api", api_key),
-                             data={"from": "oladipoeyiara@gmail.com",
-                                   "to": "oladipoeyiara@gmail.com", "subject": "Course Viewer Feedback", "text": feedback_message})
+                             data={"from": "Mailgun Sandbox <postmaster@sandbox49814fc1f62344c58497da88c739bcad.mailgun.org>",
+                                   "to": "osamanajeeb59@gmail.com", # You can use either of the emails you authorized!
+                                   "subject": "Course Viewer Feedback", 
+                                   "text": feedback_message})
         
         print(resp)
         return "Feedback sent successfully", 200
