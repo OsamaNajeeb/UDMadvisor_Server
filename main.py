@@ -103,7 +103,7 @@ def send_feedback():
                              data={"from": "Mailgun Sandbox <postmaster@sandbox49814fc1f62344c58497da88c739bcad.mailgun.org>",
                                    "to": "osamanajeeb59@gmail.com", # You can use either of the emails you authorized!
                                    "subject": "Course Viewer Feedback", 
-                                   "text": feedback_message})
+                                   "text": feedback_message}) #sad
         
         print(resp)
         return "Feedback sent successfully", 200
