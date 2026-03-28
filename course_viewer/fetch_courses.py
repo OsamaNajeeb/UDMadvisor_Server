@@ -11,6 +11,7 @@ import time
 class RequestDataType(BaseModel):
     term_name: str
     term_code: str
+    subject: str  # <--- NEW: Added subject validation
     refresh_course_data: bool = Field(default=False)
     
 fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api")
@@ -24,15 +25,18 @@ def fetch_courses():
         request_data = RequestDataType(
             term_name=request.args.get('term_name'),
             term_code=request.args.get('term_code'),
-            refresh_course_data=request.args.get('refresh_course_data')
+            subject=request.args.get('subject'), # <--- NEW: Catch the subject from the URL
+            
+            # Helper to ensure string "false" from JS becomes boolean False in Python
+            refresh_course_data=str(request.args.get('refresh_course_data')).lower() == 'true' 
         )
     except ValidationError as e:
-        if request.args.get('term_name') in (None, "") or request.args.get('term_code') in (None, ""):
-            current_app.logger.error(e)
-            return jsonify({"error": {"code": "INPUT_ERROR", "message": "Term code or term name is missing. Try selecting another term"}}), 400
+        current_app.logger.error(e)
+        return jsonify({"error": {"code": "INPUT_ERROR", "message": "Term, term code, or subject is missing."}}), 400
 
     term_code = request_data.term_code
     term_name = request_data.term_name
+    subject = request_data.subject
     refresh_course_data = request_data.refresh_course_data
     
     # Format term name
@@ -42,8 +46,9 @@ def fetch_courses():
     # API for fetching the courses
     API_URL = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/searchResults"
     
+    # --- NEW: Make the cache file specific to the subject! (e.g., fall2024_acc.json) ---
     term_title = term_name.split(" ")
-    term_cache_json_file_name = "".join(term_title).lower() + ".json"
+    term_cache_json_file_name = f"{''.join(term_title).lower()}_{subject.lower()}.json"
     
     current_app.logger.info(f"Reload the course data/cache: {refresh_course_data}")
    
@@ -55,10 +60,8 @@ def fetch_courses():
                 course_data = json.load(file)
                 
                 courses = []
-                
                 for course in course_data:
                     formatted_course = format_course(course)
-                    
                     if formatted_course:
                         courses.append(formatted_course)
                 
@@ -66,9 +69,12 @@ def fetch_courses():
                 return courses, 200
 
         except FileNotFoundError:
-            current_app.logger.error('No cache file exists for the term the user tried to fetch: %s.', term_cache_json_file_name)
-            return jsonify({"error": {"code": "NO_CACHE_FILE_EXISTS", "message": "No data exists for this term. Please click the refresh course data and try again"}}), 404
+            # --- THE MAGIC UX FIX ---
+            # Instead of returning a 404 error and making the app crash if they haven't 
+            # viewed this subject before, we just silently fall through and fetch it live!
+            current_app.logger.info(f'No cache exists for {term_cache_json_file_name}. Fetching live instead.')
 
+    # FETCH LIVE FROM THE UNIVERSITY
     try:          
         cookies = fetch_cookies(term_name=term_name)
     except Exception as e:
@@ -80,6 +86,7 @@ def fetch_courses():
     
     params = {
         "txt_term": term_code,
+        "txt_subject": subject, # <--- NEW: Tells the university API to ONLY send this subject!
         "startDatepicker": "",
         "endDatepicker": "",
         "uniqueSessionId": "gro1j1740356345340",
@@ -99,7 +106,7 @@ def fetch_courses():
         response_json = response.json()
         total_courses = response_json["totalCount"]
         
-        current_app.logger.info(f"Total courses: {total_courses}")
+        current_app.logger.info(f"Total courses for {subject}: {total_courses}")
         
         # Parallel fetch function
         def fetch_page(offset):
@@ -119,7 +126,6 @@ def fetch_courses():
         courses_data = []
         courses = []
         
-        # start = time.perf_counter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             results = executor.map(fetch_page, offsets)
             
@@ -131,14 +137,12 @@ def fetch_courses():
                     if formatted:
                         courses.append(formatted)
         
-        # end = time.perf_counter()
-        # print(f"Time: {end - start}")
-        
-        # Cache the raw data
+        # Cache the raw data specifically for this subject
+        os.makedirs("cache", exist_ok=True) # Ensure cache folder exists
         with open(os.path.join("cache", term_cache_json_file_name), "w", encoding="utf-8") as f:
             json.dump(courses_data, f)
         
-        current_app.logger.info("Courses fetched successfully")
+        current_app.logger.info(f"{subject} Courses fetched successfully")
         return courses, 200
 
     except Exception as e:
