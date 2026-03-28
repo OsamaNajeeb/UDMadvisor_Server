@@ -6,12 +6,11 @@ from utils.format_course_details import format_course
 from utils.fetch_cookies import fetch_cookies
 from requests import Session
 import concurrent.futures
-import time
 
 class RequestDataType(BaseModel):
     term_name: str
     term_code: str
-    subject: str  # <--- NEW: Added subject validation
+    subject: str  # <--- NEW: Catches the "ACC,BIO" string from the app
     refresh_course_data: bool = Field(default=False)
     
 fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api")
@@ -20,14 +19,12 @@ fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api"
 def fetch_courses():
     current_app.logger.info("Fetching courses...")
     
-    # Validate the input
+    # 1. Validate the input from the React Native app
     try:
         request_data = RequestDataType(
             term_name=request.args.get('term_name'),
             term_code=request.args.get('term_code'),
-            subject=request.args.get('subject'), # <--- NEW: Catch the subject from the URL
-            
-            # Helper to ensure string "false" from JS becomes boolean False in Python
+            subject=request.args.get('subject'),
             refresh_course_data=str(request.args.get('refresh_course_data')).lower() == 'true' 
         )
     except ValidationError as e:
@@ -36,7 +33,10 @@ def fetch_courses():
 
     term_code = request_data.term_code
     term_name = request_data.term_name
-    subject = request_data.subject
+    
+    # 2. Chop "ACC,BIO" into a Python list: ["ACC", "BIO"]
+    subject_list = request_data.subject.split(',')
+    
     refresh_course_data = request_data.refresh_course_data
     
     # Format term name
@@ -46,13 +46,14 @@ def fetch_courses():
     # API for fetching the courses
     API_URL = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/searchResults"
     
-    # --- NEW: Make the cache file specific to the subject! (e.g., fall2024_acc.json) ---
+    # 3. Make a safe cache file name using the joined list (e.g., fall2024_acc_bio.json)
     term_title = term_name.split(" ")
-    term_cache_json_file_name = f"{''.join(term_title).lower()}_{subject.lower()}.json"
+    safe_subject_str = "_".join(subject_list)[:50] # Limits length for the OS
+    term_cache_json_file_name = f"{''.join(term_title).lower()}_{safe_subject_str}.json"
     
     current_app.logger.info(f"Reload the course data/cache: {refresh_course_data}")
    
-    # If the user doesn't want to refresh the course data, fetch from cache
+    # 4. Check Cache First
     if not refresh_course_data:
         try:
             current_app.logger.info(f"Checking if {term_cache_json_file_name} is in cache")
@@ -69,12 +70,9 @@ def fetch_courses():
                 return courses, 200
 
         except FileNotFoundError:
-            # --- THE MAGIC UX FIX ---
-            # Instead of returning a 404 error and making the app crash if they haven't 
-            # viewed this subject before, we just silently fall through and fetch it live!
             current_app.logger.info(f'No cache exists for {term_cache_json_file_name}. Fetching live instead.')
 
-    # FETCH LIVE FROM THE UNIVERSITY
+    # 5. FETCH LIVE FROM THE UNIVERSITY
     try:          
         cookies = fetch_cookies(term_name=term_name)
     except Exception as e:
@@ -86,7 +84,7 @@ def fetch_courses():
     
     params = {
         "txt_term": term_code,
-        "txt_subject": subject, # <--- NEW: Tells the university API to ONLY send this subject!
+        "txt_subject": subject_list, # <--- THE MAGIC FIX: The whole array gets passed here
         "startDatepicker": "",
         "endDatepicker": "",
         "uniqueSessionId": "gro1j1740356345340",
@@ -97,16 +95,19 @@ def fetch_courses():
     
     try:
         # Initial fetch to get total courses count
-        params.update({
+        params_copy = params.copy()
+        params_copy.update({
             'pageOffset': 0,
             "pageMaxSize": 10
         })
                 
-        response = session.get(API_URL, params=params)  
+        response = session.get(API_URL, params=params_copy)  
         response_json = response.json()
-        total_courses = response_json["totalCount"]
         
-        current_app.logger.info(f"Total courses for {subject}: {total_courses}")
+        # Safely grab totalCount just in case the university server glitches
+        total_courses = response_json.get("totalCount", 0) 
+        
+        current_app.logger.info(f"Total courses: {total_courses}")
         
         # Parallel fetch function
         def fetch_page(offset):
@@ -115,8 +116,8 @@ def fetch_courses():
                 'pageOffset': offset,
                 "pageMaxSize": max_page_size
             })
-            response = session.get(API_URL, params=page_params)
-            return response.json()["data"]
+            res = session.get(API_URL, params=page_params)
+            return res.json().get("data", [])
         
         # Calculate offsets
         num_pages = (total_courses // max_page_size) + 1
@@ -137,12 +138,12 @@ def fetch_courses():
                     if formatted:
                         courses.append(formatted)
         
-        # Cache the raw data specifically for this subject
+        # Cache the raw data specifically for this exact combination of subjects
         os.makedirs("cache", exist_ok=True) # Ensure cache folder exists
         with open(os.path.join("cache", term_cache_json_file_name), "w", encoding="utf-8") as f:
             json.dump(courses_data, f)
         
-        current_app.logger.info(f"{subject} Courses fetched successfully")
+        current_app.logger.info("Courses fetched successfully")
         return courses, 200
 
     except Exception as e:
