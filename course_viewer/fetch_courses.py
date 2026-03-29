@@ -37,7 +37,7 @@ def fetch_courses():
     # 2. Chop "ACC,BIO" into a Python list: ["ACC", "BIO"]
     subject_list = request_data.subject.split(',')
     
-    refresh_course_data = request_data.refresh_course_data
+    refresh_course_data = request_data.refresh_course_data #Garbage Comment
     
     # Format term name
     term_name = term_name.replace(" (View Only)", "")
