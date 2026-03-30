@@ -1,7 +1,5 @@
 import os
 import json
-import re
-import html
 from flask import Blueprint, request, jsonify, current_app
 from pydantic import BaseModel, ValidationError, Field
 from utils.format_course_details import format_course
@@ -15,44 +13,6 @@ class RequestDataType(BaseModel):
     refresh_course_data: bool = Field(default=False)
     
 fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api")
-
-# --- 🚨 THE PREREQUISITE SCRAPER 🚨 ---
-def get_prerequisites(session, crn, term_code):
-    prereq_url = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/getSectionPrerequisites"
-    try:
-        res = session.post(prereq_url, data={"term": term_code, "courseReferenceNumber": crn}, timeout=3)
-        if res.ok:
-            clean_text = re.sub('<[^<]+>', ' ', res.text).strip()
-            clean_text = html.unescape(clean_text)
-            clean_text = " ".join(clean_text.split())
-            if "No prerequisite" in clean_text or "No corequisite" in clean_text:
-                return ""
-            return clean_text
-    except:
-        pass
-    return ""
-
-# --- 🚨 THE CROSS-LIST SCRAPER 🚨 ---
-def get_crosslist(session, crn, term_code):
-    xlst_url = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/getXlstSections"
-    try:
-        res = session.post(xlst_url, data={"term": term_code, "courseReferenceNumber": crn}, timeout=3)
-        if res.ok and res.text.strip():
-            tbody_match = re.search(r'<tbody>(.*?)</tbody>', res.text, re.DOTALL | re.IGNORECASE)
-            if tbody_match:
-                rows = re.findall(r'<tr>(.*?)</tr>', tbody_match.group(1), re.DOTALL | re.IGNORECASE)
-                cross_lists = []
-                for row in rows:
-                    cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
-                    if len(cols) >= 3:
-                        subject_text = html.unescape(cols[1].strip())
-                        course_number = cols[2].strip()
-                        cross_lists.append(f"{subject_text} {course_number}")
-                if cross_lists:
-                    return "Cross-listed with: " + ", ".join(cross_lists)
-    except:
-        pass
-    return ""
 
 @fetch_courses_blueprint.route('/fetch_courses', methods=['GET'])
 def fetch_courses():
@@ -106,6 +66,21 @@ def fetch_courses():
             current_app.logger.error('No cache file exists for the term the user tried to fetch: %s.', term_cache_json_file_name)
             return jsonify({"error": {"code": "NO_CACHE_FILE_EXISTS", "message": "No data exists for this term. Please click the refresh course data and try again"}}), 404
 
+    # --- 🚨 THE SMART MERGE: Memorize the Cron Job's hard work before overwriting! 🚨 ---
+    existing_extras = {}
+    try:
+        with open(os.path.join("cache", term_cache_json_file_name), "r") as file:
+            old_data = json.load(file)
+            for old_course in old_data:
+                crn = old_course.get("courseReferenceNumber")
+                if crn:
+                    existing_extras[crn] = {
+                        "prerequisiteText": old_course.get("prerequisiteText", ""),
+                        "crossListText": old_course.get("crossListText", "")
+                    }
+    except FileNotFoundError:
+        pass # It's okay if the file doesn't exist yet (e.g., brand new term)
+
     try:          
         cookies = fetch_cookies(term_name=term_name)
     except Exception as e:
@@ -148,12 +123,12 @@ def fetch_courses():
             res = session.get(API_URL, params=page_params)
             page_data = res.json().get("data", [])
             
+            # 🚨 INSTANTLY GLUE THE DATA BACK TOGETHER 🚨
             for course in page_data:
                 crn = course.get("courseReferenceNumber")
-                if crn:
-                    # Pass the session, CRN, and term_code down to the scrapers!
-                    course["prerequisiteText"] = get_prerequisites(session, crn, term_code)
-                    course["crossListText"] = get_crosslist(session, crn, term_code)
+                if crn and crn in existing_extras:
+                    course["prerequisiteText"] = existing_extras[crn]["prerequisiteText"]
+                    course["crossListText"] = existing_extras[crn]["crossListText"]
                     
             return page_data
         
