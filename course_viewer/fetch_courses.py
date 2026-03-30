@@ -1,5 +1,7 @@
 import os
 import json
+import re
+import html
 from flask import Blueprint, request, jsonify, current_app
 from pydantic import BaseModel, ValidationError, Field
 from utils.format_course_details import format_course
@@ -10,33 +12,66 @@ import concurrent.futures
 class RequestDataType(BaseModel):
     term_name: str
     term_code: str
-    subject: str  # <--- NEW: Catches the "ACC,BIO" string from the app
     refresh_course_data: bool = Field(default=False)
     
 fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api")
+
+# --- 🚨 THE PREREQUISITE SCRAPER 🚨 ---
+def get_prerequisites(session, crn, term_code):
+    prereq_url = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/getSectionPrerequisites"
+    try:
+        res = session.post(prereq_url, data={"term": term_code, "courseReferenceNumber": crn}, timeout=3)
+        if res.ok:
+            clean_text = re.sub('<[^<]+>', ' ', res.text).strip()
+            clean_text = html.unescape(clean_text)
+            clean_text = " ".join(clean_text.split())
+            if "No prerequisite" in clean_text or "No corequisite" in clean_text:
+                return ""
+            return clean_text
+    except:
+        pass
+    return ""
+
+# --- 🚨 THE CROSS-LIST SCRAPER 🚨 ---
+def get_crosslist(session, crn, term_code):
+    xlst_url = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/getXlstSections"
+    try:
+        res = session.post(xlst_url, data={"term": term_code, "courseReferenceNumber": crn}, timeout=3)
+        if res.ok and res.text.strip():
+            tbody_match = re.search(r'<tbody>(.*?)</tbody>', res.text, re.DOTALL | re.IGNORECASE)
+            if tbody_match:
+                rows = re.findall(r'<tr>(.*?)</tr>', tbody_match.group(1), re.DOTALL | re.IGNORECASE)
+                cross_lists = []
+                for row in rows:
+                    cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
+                    if len(cols) >= 3:
+                        subject_text = html.unescape(cols[1].strip())
+                        course_number = cols[2].strip()
+                        cross_lists.append(f"{subject_text} {course_number}")
+                if cross_lists:
+                    return "Cross-listed with: " + ", ".join(cross_lists)
+    except:
+        pass
+    return ""
 
 @fetch_courses_blueprint.route('/fetch_courses', methods=['GET'])
 def fetch_courses():
     current_app.logger.info("Fetching courses...")
     
-    # 1. Validate the input from the React Native app
+    # Validate the input
     try:
         request_data = RequestDataType(
             term_name=request.args.get('term_name'),
             term_code=request.args.get('term_code'),
-            subject=request.args.get('subject'),
-            refresh_course_data=str(request.args.get('refresh_course_data')).lower() == 'true' 
+            refresh_course_data=request.args.get('refresh_course_data')
         )
     except ValidationError as e:
-        current_app.logger.error(e)
-        return jsonify({"error": {"code": "INPUT_ERROR", "message": "Term, term code, or subject is missing."}}), 400
+        if request.args.get('term_name') in (None, "") or request.args.get('term_code') in (None, ""):
+            current_app.logger.error(e)
+            return jsonify({"error": {"code": "INPUT_ERROR", "message": "Term code or term name is missing. Try selecting another term"}}), 400
 
     term_code = request_data.term_code
     term_name = request_data.term_name
-    
-    # 2. Chop "ACC,BIO" into a Python list: ["ACC", "BIO"]
-    subject_list = request_data.subject.split(',')
-    
     refresh_course_data = request_data.refresh_course_data
     
     # Format term name
@@ -46,14 +81,12 @@ def fetch_courses():
     # API for fetching the courses
     API_URL = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/searchResults"
     
-    # 3. Make a safe cache file name using the joined list (e.g., fall2024_acc_bio.json)
     term_title = term_name.split(" ")
-    safe_subject_str = "_".join(subject_list)[:50] # Limits length for the OS
-    term_cache_json_file_name = f"{''.join(term_title).lower()}_{safe_subject_str}.json"
+    term_cache_json_file_name = "".join(term_title).lower() + ".json"
     
     current_app.logger.info(f"Reload the course data/cache: {refresh_course_data}")
    
-    # 4. Check Cache First
+    # If the user doesn't want to refresh the course data, fetch from cache
     if not refresh_course_data:
         try:
             current_app.logger.info(f"Checking if {term_cache_json_file_name} is in cache")
@@ -70,9 +103,9 @@ def fetch_courses():
                 return courses, 200
 
         except FileNotFoundError:
-            current_app.logger.info(f'No cache exists for {term_cache_json_file_name}. Fetching live instead.')
+            current_app.logger.error('No cache file exists for the term the user tried to fetch: %s.', term_cache_json_file_name)
+            return jsonify({"error": {"code": "NO_CACHE_FILE_EXISTS", "message": "No data exists for this term. Please click the refresh course data and try again"}}), 404
 
-    # 5. FETCH LIVE FROM THE UNIVERSITY
     try:          
         cookies = fetch_cookies(term_name=term_name)
     except Exception as e:
@@ -84,7 +117,6 @@ def fetch_courses():
     
     params = {
         "txt_term": term_code,
-        "txt_subject": subject_list, # <--- THE MAGIC FIX: The whole array gets passed here
         "startDatepicker": "",
         "endDatepicker": "",
         "uniqueSessionId": "gro1j1740356345340",
@@ -95,21 +127,18 @@ def fetch_courses():
     
     try:
         # Initial fetch to get total courses count
-        params_copy = params.copy()
-        params_copy.update({
+        params.update({
             'pageOffset': 0,
             "pageMaxSize": 10
         })
                 
-        response = session.get(API_URL, params=params_copy)  
+        response = session.get(API_URL, params=params)  
         response_json = response.json()
-        
-        # Safely grab totalCount just in case the university server glitches
-        total_courses = response_json.get("totalCount", 0) 
+        total_courses = response_json["totalCount"]
         
         current_app.logger.info(f"Total courses: {total_courses}")
-        
-        # Parallel fetch function
+
+        # --- UPDATE THE PAGE FETCHER ---
         def fetch_page(offset):
             page_params = params.copy()
             page_params.update({
@@ -117,7 +146,16 @@ def fetch_courses():
                 "pageMaxSize": max_page_size
             })
             res = session.get(API_URL, params=page_params)
-            return res.json().get("data", [])
+            page_data = res.json().get("data", [])
+            
+            for course in page_data:
+                crn = course.get("courseReferenceNumber")
+                if crn:
+                    # Pass the session, CRN, and term_code down to the scrapers!
+                    course["prerequisiteText"] = get_prerequisites(session, crn, term_code)
+                    course["crossListText"] = get_crosslist(session, crn, term_code)
+                    
+            return page_data
         
         # Calculate offsets
         num_pages = (total_courses // max_page_size) + 1
@@ -138,8 +176,8 @@ def fetch_courses():
                     if formatted:
                         courses.append(formatted)
         
-        # Cache the raw data specifically for this exact combination of subjects
-        os.makedirs("cache", exist_ok=True) # Ensure cache folder exists
+        # Cache the raw data
+        os.makedirs("cache", exist_ok=True)
         with open(os.path.join("cache", term_cache_json_file_name), "w", encoding="utf-8") as f:
             json.dump(courses_data, f)
         
