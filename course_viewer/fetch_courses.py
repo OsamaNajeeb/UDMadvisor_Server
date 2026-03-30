@@ -3,7 +3,6 @@ import json
 from flask import Blueprint, request, jsonify, current_app
 from pydantic import BaseModel, ValidationError, Field
 from utils.format_course_details import format_course
-from utils.fetch_cookies import fetch_cookies
 from requests import Session
 import concurrent.futures
 
@@ -18,7 +17,6 @@ fetch_courses_blueprint = Blueprint('fetch_courses', __name__, url_prefix="/api"
 def fetch_courses():
     current_app.logger.info("Fetching courses...")
     
-    # Validate the input
     try:
         request_data = RequestDataType(
             term_name=request.args.get('term_name'),
@@ -34,11 +32,8 @@ def fetch_courses():
     term_name = request_data.term_name
     refresh_course_data = request_data.refresh_course_data
     
-    # Format term name
     term_name = term_name.replace(" (View Only)", "")
     max_page_size = 250
-    
-    # API for fetching the courses
     API_URL = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/searchResults/searchResults"
     
     term_title = term_name.split(" ")
@@ -46,7 +41,6 @@ def fetch_courses():
     
     current_app.logger.info(f"Reload the course data/cache: {refresh_course_data}")
    
-    # If the user doesn't want to refresh the course data, fetch from cache
     if not refresh_course_data:
         try:
             current_app.logger.info(f"Checking if {term_cache_json_file_name} is in cache")
@@ -66,7 +60,7 @@ def fetch_courses():
             current_app.logger.error('No cache file exists for the term the user tried to fetch: %s.', term_cache_json_file_name)
             return jsonify({"error": {"code": "NO_CACHE_FILE_EXISTS", "message": "No data exists for this term. Please click the refresh course data and try again"}}), 404
 
-    # --- 🚨 THE SMART MERGE: Memorize the Cron Job's hard work before overwriting! 🚨 ---
+    # --- 🚨 THE SMART MERGE 🚨 ---
     existing_extras = {}
     try:
         with open(os.path.join("cache", term_cache_json_file_name), "r") as file:
@@ -79,17 +73,28 @@ def fetch_courses():
                         "crossListText": old_course.get("crossListText", "")
                     }
     except FileNotFoundError:
-        pass # It's okay if the file doesn't exist yet (e.g., brand new term)
+        pass 
 
-    try:          
-        cookies = fetch_cookies(term_name=term_name)
-    except Exception as e:
-        current_app.logger.error(f"Cookie fetch error: {e}")
-        return jsonify({"error": {"code": "COOKIES_ERROR", "message": "There was an error fetching cookies, please try again"}}), 500
-
+    # --- 🚨 THE GOD-MODE FIX: NO SELENIUM, NO CHROME, NO CRASHING 🚨 ---
     session = Session()
-    session.cookies.update(cookies)
-    
+    try:
+        current_app.logger.info("Bypassing Selenium and authenticating directly via Python...")
+        
+        # 1. Hit the main page to grab the hidden JSESSIONID
+        session.get("https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/term/termSelection?mode=search", timeout=10)
+        
+        # 2. Tell the server exactly which term we want to look at (This replaces the UI dropdown click!)
+        term_url = "https://reg-prod.ec.udmercy.edu/StudentRegistrationSsb/ssb/term/search?mode=search"
+        auth_response = session.post(term_url, data={"term": term_code}, timeout=10)
+        
+        if not auth_response.ok:
+            raise Exception("Failed to set the term in the university system.")
+            
+        current_app.logger.info("Successfully authenticated via direct POST!")
+    except Exception as e:
+        current_app.logger.error(f"Direct auth error: {e}")
+        return jsonify({"error": {"code": "AUTH_ERROR", "message": "Failed to connect to the university system."}}), 500
+
     params = {
         "txt_term": term_code,
         "startDatepicker": "",
@@ -101,29 +106,19 @@ def fetch_courses():
     }
     
     try:
-        # Initial fetch to get total courses count
-        params.update({
-            'pageOffset': 0,
-            "pageMaxSize": 10
-        })
-                
+        params.update({'pageOffset': 0, "pageMaxSize": 10})
         response = session.get(API_URL, params=params)  
         response_json = response.json()
-        total_courses = response_json["totalCount"]
+        total_courses = response_json.get("totalCount", 0)
         
         current_app.logger.info(f"Total courses: {total_courses}")
 
-        # --- UPDATE THE PAGE FETCHER ---
         def fetch_page(offset):
             page_params = params.copy()
-            page_params.update({
-                'pageOffset': offset,
-                "pageMaxSize": max_page_size
-            })
+            page_params.update({'pageOffset': offset, "pageMaxSize": max_page_size})
             res = session.get(API_URL, params=page_params)
             page_data = res.json().get("data", [])
             
-            # 🚨 INSTANTLY GLUE THE DATA BACK TOGETHER 🚨
             for course in page_data:
                 crn = course.get("courseReferenceNumber")
                 if crn and crn in existing_extras:
@@ -132,26 +127,21 @@ def fetch_courses():
                     
             return page_data
         
-        # Calculate offsets
         num_pages = (total_courses // max_page_size) + 1
         offsets = [i * max_page_size for i in range(num_pages)]
         
-        # Fetch pages in parallel (max 5 concurrent)
         courses_data = []
         courses = []
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             results = executor.map(fetch_page, offsets)
-            
             for page_data in results:
                 courses_data.extend(page_data)
-                
                 for course in page_data:
                     formatted = format_course(course)
                     if formatted:
                         courses.append(formatted)
         
-        # Cache the raw data
         os.makedirs("cache", exist_ok=True)
         with open(os.path.join("cache", term_cache_json_file_name), "w", encoding="utf-8") as f:
             json.dump(courses_data, f)
@@ -161,7 +151,6 @@ def fetch_courses():
 
     except Exception as e:
         current_app.logger.error(f"Fetch error: {e}")
-        return jsonify({"error": {"code": "FETCH_ERROR", "message": "An unexpected error has occurred. Please try again later"}}), 500
-    
+        return jsonify({"error": {"code": "FETCH_ERROR", "message": "An unexpected error has occurred."}}), 500
     finally:
         session.close()
