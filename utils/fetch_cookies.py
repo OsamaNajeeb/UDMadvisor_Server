@@ -23,6 +23,12 @@ def fetch_cookies(term_name: str):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--enable-logging")
     chrome_options.add_argument("--window-size=1920,1080")
+
+    # --- 🚨 THE EXTREME LOW-MEMORY DIET FLAGS 🚨 ---
+    chrome_options.add_argument("--single-process")       # Forces Chrome to use 1 core instead of splitting
+    chrome_options.add_argument("--no-zygote")            # Disables the Chrome sandbox helper to save RAM
+    chrome_options.add_argument("--disable-extensions")   # Blocks any hidden extensions from loading
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # Tells Chrome NOT to download images!
     
     # --- NEW FIXES FOR RENDER CLOUD ---
     chrome_options.add_argument("--remote-debugging-port=9222")
