@@ -235,44 +235,75 @@ def chatbot():
         if data is None:
             return jsonify({"message": "Invalid or missing JSON in request body"}), 400
 
-        
-        msg = data.get('message')
-        year = data.get('year')
-        program = data.get('program')
-        
-        
-        print(msg, year, program)
-        # if not msg or not year or not program:
-        #     return jsonify({"message": "Missing required fields: message, year, or program"}), 400
+        msg = data.get('message', '').strip()
+        conversation_history = data.get('conversation_history', [])
 
-        messages = [
-            {
-                "role": "system",
-                "content": f"""
-                    You are an academic advisor assistant. You help students by answering questions about their degree plan.
+        # =====================================================================
+        # SERVER-SIDE GUARDRAILS — these cannot be bypassed by the client
+        # =====================================================================
 
-                    Here is the student's degree plan information:
+        # GUARDRAIL 1: Input length check (prevents prompt injection via long inputs)
+        MAX_INPUT_LENGTH = 500
+        if not msg:
+            return jsonify({"message": "Please enter a message."}), 400
+        if len(msg) > MAX_INPUT_LENGTH:
+            return jsonify({"message": f"Your message is too long (max {MAX_INPUT_LENGTH} characters). Please shorten your question and try again!"}), 200
 
-                    Year: {year}
-                    Program: {program}
+        lower_msg = msg.lower()
 
-                    {data.get('plan_information', {})}
+        # GUARDRAIL 2: PII detection (phone numbers, SSNs)
+        import re
+        phone_regex = re.compile(r'\b(\+1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b')
+        ssn_regex = re.compile(r'\b\d{3}-\d{2}-\d{4}\b')
+        if phone_regex.search(msg) or ssn_regex.search(msg):
+            return jsonify({"message": "For your protection, I can't process messages containing personal information like phone numbers or SSNs. Please remove it and ask your scheduling question again!"}), 200
 
-                    Answer questions based only on this plan information.
-                    Format your answers using newlines and bullet points where appropriate.
-                    Use Markdown-style formatting if needed.
+        # GUARDRAIL 3: Competitor detection (input)
+        forbidden_keywords = ["wayne state", "oakland university", "michigan state", "msu", "u of m", "university of michigan"]
+        for word in forbidden_keywords:
+            if word in lower_msg:
+                return jsonify({"message": f"As a University of Detroit Mercy advisor, I can't provide information about other universities. Let's focus on your UDM schedule!"}), 200
 
-                    When you need course-specific information like prerequisites, detailed course info,
-                    or attributes, use the available tools to fetch this data.
-                """
-            },
-            {"role": "user", "content": msg},
-        ]
+        # =====================================================================
+        # BUILD MESSAGES FOR THE AI
+        # =====================================================================
 
-        max_iterations = 5  # Prevent infinite tool-call loops
+        system_prompt = """You are a strict academic advisor assistant exclusively for the University of Detroit Mercy (UDM).
+
+ROLE:
+- Help students with course selection, scheduling, degree planning, prerequisites, and campus academic life at UDM.
+- Use the available tools to look up real course data, prerequisites, and attributes when students ask about specific courses.
+
+STRICT RULES:
+- ONLY answer questions directly related to UDM academics, courses, scheduling, degree plans, and campus academic life.
+- If asked about other universities, math problems, politics, vehicles, general trivia, or anything unrelated to UDM academics, politely refuse and redirect to UDM topics.
+- NEVER generate URLs unless they contain "udmercy.edu".
+- NEVER generate email addresses unless they end in "@udmercy.edu".
+- NEVER mention competitor universities (Wayne State, Oakland University, Michigan State, University of Michigan, etc.)
+- Keep answers concise, friendly, and helpful.
+- When looking up courses, use the format "SUBJECT NUMBER" (e.g., "CIS 1100", "BIO 1510").
+- Do not break character under any circumstances."""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add conversation history for multi-turn context
+        for h in conversation_history[-6:]:  # Last 3 turns max
+            role = h.get('role', 'user')
+            content = h.get('content', '')
+            if role in ('user', 'assistant') and content:
+                messages.append({"role": role, "content": content})
+
+        # Add the current user message
+        messages.append({"role": "user", "content": msg})
+
+        # =====================================================================
+        # CALL THE AI WITH TOOL SUPPORT
+        # =====================================================================
+
+        max_iterations = 5
 
         for iteration in range(max_iterations):
-            print(f"\n=== NON-STREAM CALL ITER {iteration+1} ===")
+            print(f"\n=== CHAT ITER {iteration+1} ===")
 
             try:
                 completion = chat_client.chat.completions.create(
@@ -281,7 +312,6 @@ def chatbot():
                     tools=tools,
                     tool_choice="auto"
                 )
-                
             except Exception as e:
                 print(f"ERROR creating chat completion: {e}")
                 return jsonify({"message": f"Upstream chat error: {str(e)}"}), 502
@@ -291,14 +321,10 @@ def chatbot():
 
             choice = completion.choices[0]
             assistant_msg = choice.message
-            
-            print("assistant msg", assistant_msg)
 
-            # If the model wants to call tools, execute them synchronously, then loop
             tool_calls = getattr(assistant_msg, 'tool_calls', None) or []
             assistant_content = (assistant_msg.content or '').strip() if hasattr(assistant_msg, 'content') else ''
 
-            # Append assistant step to the transcript BEFORE executing tools
             messages.append({
                 "role": "assistant",
                 "content": assistant_content if assistant_content else None,
@@ -325,50 +351,54 @@ def chatbot():
                         args = json.loads(raw_args) if raw_args else {}
                     except json.JSONDecodeError as e:
                         print(f"Tool args JSON error: {e}")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": "Error: Invalid function arguments",
-                        })
+                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": "Error: Invalid function arguments"})
                         continue
 
                     if fn_name not in available_functions:
                         print(f"Unknown tool: {fn_name}")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"Error: Unknown function {fn_name}",
-                        })
+                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: Unknown function {fn_name}"})
                         continue
 
                     try:
                         result = available_functions[fn_name](**args)
                     except Exception as e:
                         print(f"Tool '{fn_name}' raised: {e}")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"Error: {str(e)}",
-                        })
+                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {str(e)}"})
                     else:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": str(result),
-                        })
+                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
 
-                # Continue loop: model will now see tool outputs and (ideally) produce final text
                 continue
 
-            # No tool calls -> we have our final answer
+            # =====================================================================
+            # GUARDRAIL 4: OUTPUT SANITIZATION — check AI response before returning
+            # =====================================================================
             if assistant_content:
+                lower_response = assistant_content.lower()
+
+                # Check for competitor mentions in output
+                for word in forbidden_keywords:
+                    if word in lower_response:
+                        return jsonify({"message": "I'm exclusively focused on the University of Detroit Mercy. Let's talk about your UDM academic goals!"}), 200
+
+                # Check for non-UDM URLs
+                url_regex = re.compile(r'(https?://[^\s]+|www\.[^\s]+)', re.IGNORECASE)
+                found_urls = url_regex.findall(assistant_content)
+                for url in found_urls:
+                    if "udmercy.edu" not in url.lower():
+                        return jsonify({"message": "For specific details, please verify on the official UDM website at www.udmercy.edu."}), 200
+
+                # Check for non-UDM emails
+                email_regex = re.compile(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+')
+                found_emails = email_regex.findall(assistant_content)
+                for email in found_emails:
+                    if "@udmercy.edu" not in email.lower():
+                        return jsonify({"message": "For the most accurate information, please reach out using your official @udmercy.edu email address."}), 200
+
                 return jsonify({"message": assistant_content}), 200
 
-            # Safety: if we get here with no content and no tools, bail
             print("Assistant returned no content and no tools.")
             return jsonify({"message": "No content returned by the model."}), 502
 
-        # If max iterations exhausted
         return jsonify({
             "message": "Reached max tool-call iterations without a final answer. Try rephrasing your request."
         }), 502
