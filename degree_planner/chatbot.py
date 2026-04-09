@@ -12,7 +12,7 @@ chat_client = OpenAI(
     base_url="https://router.huggingface.co/v1"
 )
 
-model = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
 
 chatbot_blueprint = Blueprint('chat', __name__, url_prefix="/api")
 
@@ -279,7 +279,6 @@ def chatbot():
                     model=model,
                     messages=messages,
                     tools=tools,
-                    reasoning_effort="low",
                     tool_choice="auto"
                 )
                 
@@ -377,7 +376,3 @@ def chatbot():
     except Exception as e:
         print("Exception in /chat:", e)
         return jsonify({"message": "Error generating response"}), 500
-
-
-
-    

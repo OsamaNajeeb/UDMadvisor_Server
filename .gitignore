@@ -5,3 +5,5 @@ course_data.json
 .env
 uploads/
 */__pycache__/
+
+server.zip
