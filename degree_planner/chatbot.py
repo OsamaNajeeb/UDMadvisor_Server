@@ -6,6 +6,8 @@ import requests
 from utils.format_course_details import format_course
 import json
 import os
+import uuid
+from types import SimpleNamespace
 
 chat_client = OpenAI(
     api_key=os.environ["HF_TOKEN"],
@@ -494,6 +496,49 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
             tool_calls = getattr(assistant_msg, 'tool_calls', None) or []
             assistant_content = (assistant_msg.content or '').strip() if hasattr(assistant_msg, 'content') else ''
 
+# --- ADD THIS FALLBACK PARSER ---
+            # Catches Llama-3.1 outputting tool calls directly in the text content
+            if not tool_calls and assistant_content.startswith('{') and '"name"' in assistant_content and '"arguments"' in assistant_content:
+                try:
+                    # Clean up any potential markdown formatting the model might add
+                    clean_content = assistant_content.replace('```json', '').replace('```', '').strip()
+                    parsed = json.loads(clean_content)
+                    
+                    if "name" in parsed and "arguments" in parsed:
+                        # Ensure arguments are a string, as expected by the OpenAI standard
+                        args_str = json.dumps(parsed["arguments"]) if isinstance(parsed["arguments"], dict) else str(parsed["arguments"])
+                        
+                        # Build a mock tool call object
+                        mock_tc = SimpleNamespace(
+                            id=f"call_{uuid.uuid4().hex[:8]}",
+                            type="function",
+                            function=SimpleNamespace(
+                                name=parsed["name"],
+                                arguments=args_str
+                            )
+                        )
+                        tool_calls = [mock_tc]
+                        assistant_content = "" # Clear the text content so it doesn't get returned to the user
+                except Exception as e:
+                    print(f"Fallback parse failed: {e}")
+            # --- END FALLBACK PARSER ---
+
+            # Append to messages history
+            messages.append({
+                "role": "assistant",
+                "content": assistant_content if assistant_content else None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name if tc.function else None,
+                            "arguments": tc.function.arguments if tc.function else "{}",
+                        },
+                    }
+                    for tc in tool_calls
+                ] if tool_calls else None,
+            })
             messages.append({
                 "role": "assistant",
                 "content": assistant_content if assistant_content else None,
