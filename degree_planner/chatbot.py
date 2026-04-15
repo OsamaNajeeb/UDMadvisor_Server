@@ -14,7 +14,7 @@ chat_client = OpenAI(
     base_url="https://router.huggingface.co/v1"
 )
 
-model = "meta-llama/Llama-3.1-8B-Instruct"
+model = "meta-llama/Llama-3.1-8B-Instruct:fastest"
 
 chatbot_blueprint = Blueprint('chat', __name__, url_prefix="/api")
 
