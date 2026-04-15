@@ -377,7 +377,7 @@ def chatbot():
         conversation_history = data.get('conversation_history', [])
         term_name = data.get('term_name', '')
         client_course_summary = data.get('course_summary', '')
-        chat_mode = data.get('chat_mode', 'courses')  # 'courses' or 'plan'
+        personal_plan = data.get('personal_plan', '')
 
         # GUARDRAIL 1: Input length
         MAX_INPUT_LENGTH = 500
@@ -478,6 +478,9 @@ YOUR ONLY PURPOSE:
 - Use the COURSE DATA below to answer questions about specific courses, sections, times, credits, and enrollment.
 - The student is looking at courses for: {term_name or 'the current term'}.
 - Use the available tools to look up prerequisites and corequisites when students ask about them.
+
+TUDENT'S PERSONAL DEGREE PLAN:
+{personal_plan if personal_plan else "The student has not provided a personal degree plan. Answer based on general catalog knowledge."}
 
 COURSE DATA (from UDM's current catalog):
 {course_summary}
