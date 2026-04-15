@@ -378,6 +378,7 @@ def chatbot():
         term_name = data.get('term_name', '')
         client_course_summary = data.get('course_summary', '')
         personal_plan = data.get('personal_plan', '')
+        chat_mode = data.get('chat_mode', 'catalog')
 
         # GUARDRAIL 1: Input length
         MAX_INPUT_LENGTH = 500
@@ -644,5 +645,7 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
         }), 502
 
     except Exception as e:
+        import traceback
         print("Exception in /chat:", e)
+        traceback.print_exc()
         return jsonify({"message": "Error generating response"}), 500
