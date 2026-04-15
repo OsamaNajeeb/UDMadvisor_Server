@@ -479,7 +479,7 @@ YOUR ONLY PURPOSE:
 - The student is looking at courses for: {term_name or 'the current term'}.
 - Use the available tools to look up prerequisites and corequisites when students ask about them.
 
-TUDENT'S PERSONAL DEGREE PLAN:
+STUDENT'S PERSONAL DEGREE PLAN:
 {personal_plan if personal_plan else "The student has not provided a personal degree plan. Answer based on general catalog knowledge."}
 
 COURSE DATA (from UDM's current catalog):
@@ -533,19 +533,15 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
             tool_calls = getattr(assistant_msg, 'tool_calls', None) or []
             assistant_content = (assistant_msg.content or '').strip() if hasattr(assistant_msg, 'content') else ''
 
-# --- ADD THIS FALLBACK PARSER ---
+            # --- ADD THIS FALLBACK PARSER ---
             # Catches Llama-3.1 outputting tool calls directly in the text content
             if not tool_calls and assistant_content.startswith('{') and '"name"' in assistant_content and '"arguments"' in assistant_content:
                 try:
-                    # Clean up any potential markdown formatting the model might add
                     clean_content = assistant_content.replace('```json', '').replace('```', '').strip()
                     parsed = json.loads(clean_content)
                     
                     if "name" in parsed and "arguments" in parsed:
-                        # Ensure arguments are a string, as expected by the OpenAI standard
                         args_str = json.dumps(parsed["arguments"]) if isinstance(parsed["arguments"], dict) else str(parsed["arguments"])
-                        
-                        # Build a mock tool call object
                         mock_tc = SimpleNamespace(
                             id=f"call_{uuid.uuid4().hex[:8]}",
                             type="function",
@@ -555,68 +551,66 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
                             )
                         )
                         tool_calls = [mock_tc]
-                        assistant_content = "" # Clear the text content so it doesn't get returned to the user
+                        assistant_content = "" 
                 except Exception as e:
                     print(f"Fallback parse failed: {e}")
             # --- END FALLBACK PARSER ---
 
-            # Append to messages history
-            messages.append({
+            # Safely build the assistant message dictionary (Removed the duplicate append!)
+            assistant_msg_dict = {
                 "role": "assistant",
                 "content": assistant_content if assistant_content else None,
-                "tool_calls": [
+            }
+
+            # Only append tool_calls if they actually exist to prevent validation errors
+            if tool_calls:
+                assistant_msg_dict["tool_calls"] = [
                     {
-                        "id": tc.id,
+                        "id": getattr(tc, 'id', tc.get('id') if isinstance(tc, dict) else f"call_{uuid.uuid4().hex[:8]}"),
                         "type": "function",
                         "function": {
-                            "name": tc.function.name if tc.function else None,
-                            "arguments": tc.function.arguments if tc.function else "{}",
+                            "name": getattr(tc.function, 'name', tc.function.get('name') if isinstance(tc.function, dict) else None) if getattr(tc, 'function', tc.get('function') if isinstance(tc, dict) else None) else None,
+                            "arguments": getattr(tc.function, 'arguments', tc.function.get('arguments') if isinstance(tc.function, dict) else "{}") if getattr(tc, 'function', tc.get('function') if isinstance(tc, dict) else None) else "{}",
                         },
                     }
                     for tc in tool_calls
-                ] if tool_calls else None,
-            })
-            messages.append({
-                "role": "assistant",
-                "content": assistant_content if assistant_content else None,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name if tc.function else None,
-                            "arguments": tc.function.arguments if tc.function else "{}",
-                        },
-                    }
-                    for tc in tool_calls
-                ] if tool_calls else None,
-            })
+                ]
+
+            messages.append(assistant_msg_dict)
 
             if tool_calls:
                 print(f"Executing {len(tool_calls)} tool call(s)...")
                 for tc in tool_calls:
-                    fn_name = tc.function.name if tc.function else None
-                    raw_args = tc.function.arguments if tc.function else "{}"
+                    
+                    # Safely extract names and arguments even if HF returns a raw dictionary
+                    tc_func = getattr(tc, 'function', tc.get('function') if isinstance(tc, dict) else None)
+                    fn_name = getattr(tc_func, 'name', tc_func.get('name') if isinstance(tc_func, dict) else None) if tc_func else None
+                    raw_args = getattr(tc_func, 'arguments', tc_func.get('arguments') if isinstance(tc_func, dict) else "{}") if tc_func else "{}"
 
                     try:
-                        args = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError as e:
+                        # Prevent the TypeError crash if arguments are already parsed!
+                        args = raw_args if isinstance(raw_args, dict) else (json.loads(raw_args) if raw_args else {})
+                    except Exception as e: 
                         print(f"Tool args JSON error: {e}")
-                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": "Error: Invalid function arguments"})
+                        tc_id = getattr(tc, 'id', tc.get('id') if isinstance(tc, dict) else "unknown_id")
+                        messages.append({"role": "tool", "tool_call_id": tc_id, "content": "Error: Invalid function arguments"})
                         continue
 
                     if fn_name not in available_functions:
                         print(f"Unknown tool: {fn_name}")
-                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: Unknown function {fn_name}"})
+                        tc_id = getattr(tc, 'id', tc.get('id') if isinstance(tc, dict) else "unknown_id")
+                        messages.append({"role": "tool", "tool_call_id": tc_id, "content": f"Error: Unknown function {fn_name}"})
                         continue
 
                     try:
                         result = available_functions[fn_name](**args)
                     except Exception as e:
                         print(f"Tool '{fn_name}' raised: {e}")
-                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {str(e)}"})
+                        tc_id = getattr(tc, 'id', tc.get('id') if isinstance(tc, dict) else "unknown_id")
+                        messages.append({"role": "tool", "tool_call_id": tc_id, "content": f"Error: {str(e)}"})
                     else:
-                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+                        tc_id = getattr(tc, 'id', tc.get('id') if isinstance(tc, dict) else "unknown_id")
+                        messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
 
                 continue
 
@@ -626,18 +620,15 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
             if assistant_content:
                 lower_response = assistant_content.lower()
 
-                # Check for competitor mentions in output
                 for word in FORBIDDEN_KEYWORDS:
                     if word in lower_response:
                         return jsonify({"message": "I'm exclusively focused on the University of Detroit Mercy. Let's talk about your UDM academic goals!"}), 200
 
-                # Check for non-UDM URLs
                 found_urls = URL_REGEX.findall(assistant_content)
                 for url in found_urls:
                     if "udmercy.edu" not in url.lower():
                         return jsonify({"message": "For specific details, please verify on the official UDM website at www.udmercy.edu."}), 200
 
-                # Check for non-UDM emails
                 found_emails = EMAIL_REGEX.findall(assistant_content)
                 for email in found_emails:
                     if "@udmercy.edu" not in email.lower():
