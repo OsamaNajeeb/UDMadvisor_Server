@@ -14,7 +14,24 @@ chat_client = OpenAI(
     base_url="https://router.huggingface.co/v1"
 )
 
-model = "meta-llama/Llama-3.1-8B-Instruct:fastest"
+# Two-tier model routing:
+# - FAST model (8B) for simple catalog / section / scheduling questions.
+# - REASONING model (70B) when the student has pasted a personal degree plan,
+#   because summing credits, de-duping OR-groups, and filtering by [completed]
+#   status reliably needs a bigger model.
+# Override either via env vars on Render without a code change.
+FAST_MODEL = os.environ.get("CHAT_MODEL_FAST", "meta-llama/Llama-3.1-8B-Instruct:fastest")
+REASONING_MODEL = os.environ.get("CHAT_MODEL_REASONING", "meta-llama/Llama-3.3-70B-Instruct")
+
+def pick_model(personal_plan: str) -> str:
+    """Pick the model based on whether the request carries a personal plan.
+    Falls back to FAST if plan is missing, empty, or trivially short."""
+    if personal_plan and len(personal_plan.strip()) > 50:
+        return REASONING_MODEL
+    return FAST_MODEL
+
+# Kept for backwards compatibility with any code still reading `model`.
+model = FAST_MODEL
 
 chatbot_blueprint = Blueprint('chat', __name__, url_prefix="/api")
 
@@ -380,6 +397,11 @@ def chatbot():
         personal_plan = data.get('personal_plan', '')
         chat_mode = data.get('chat_mode', 'catalog')
 
+        # Pick model based on whether the user pasted a personal degree plan.
+        # Plan queries (remaining credits, what's left, etc.) need the 70B.
+        selected_model = pick_model(personal_plan)
+        print(f"[chat] model={selected_model} plan_len={len(personal_plan or '')}")
+
         # GUARDRAIL 1: Input length
         MAX_INPUT_LENGTH = 500
         if not msg:
@@ -547,7 +569,7 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
 
             try:
                 completion = chat_client.chat.completions.create(
-                    model=model,
+                    model=selected_model,
                     messages=messages,
                     tools=tools,
                     tool_choice="auto"
