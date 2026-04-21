@@ -303,6 +303,112 @@ def build_course_summary():
     return summary
 
 
+def _format_plan_envelope(env):
+    """Compact a UDM Advisor plan envelope into a labeled text block.
+
+    The envelope shape produced by the frontend is:
+        { format, version, exportedAt, name,
+          plan: { program, minor,
+                  plan: { semesters: [ { level, term,
+                                         courses: [
+                                           { type:"course", subject, number, name, credits, status, notes },
+                                           { type:"group", courses: [[orOption1...], [orOption2...]] },
+                                         ]
+                                       } ] } } }
+
+    Status values: 'completed', 'in progress', 'planned', 'failed',
+    'substituted', 'waived', 'transferred', or '' (no status / upcoming).
+
+    Returned format is deterministic, credits-visible, and easy for the
+    model to sum per-status. Example line:
+        CIS 1100 - Introduction to Programming [3cr, completed]
+    """
+    if not isinstance(env, dict):
+        return ''
+
+    # Envelope may be wrapped (new export) or a bare plan dict (legacy). Find
+    # the semesters list either way.
+    root = env.get('plan', env)
+    # Two possible wrappings: root.plan.semesters OR root.semesters
+    container = root.get('plan', root) if isinstance(root, dict) else {}
+    semesters = container.get('semesters', []) if isinstance(container, dict) else []
+    if not isinstance(semesters, list):
+        return ''
+
+    program = root.get('program') or env.get('name') or 'Degree Plan'
+    minor = root.get('minor') or ''
+
+    lines = [f"PROGRAM: {program}"]
+    if minor:
+        lines.append(f"MINOR: {minor}")
+    lines.append("")
+
+    def fmt_course(c):
+        if not isinstance(c, dict):
+            return None
+        subj = (c.get('subject') or '').strip()
+        num = (c.get('number') or '').strip()
+        name = (c.get('name') or '').replace('&amp;', '&').strip()
+        credits = c.get('credits', 0) or 0
+        status = (c.get('status') or '').strip().lower() or 'upcoming'
+        notes = (c.get('notes') or '').strip()
+
+        # Electives have no subject/number — surface them as "Elective".
+        if subj == 'Elective' or (not subj and not num):
+            head = 'Elective'
+        else:
+            head = f"{subj} {num}".strip()
+
+        name_part = f" - {name}" if name else ''
+        line = f"{head}{name_part} [{credits}cr, {status}]"
+        if notes:
+            line += f" (note: {notes})"
+        return line
+
+    for sem in semesters:
+        if not isinstance(sem, dict):
+            continue
+        if sem.get('term') == 'd':  # per frontend, 'd' means "hidden/divider"
+            continue
+        level = sem.get('level', '')
+        term = sem.get('term', '')
+        header = " - ".join(x for x in [level, term] if x) or 'Semester'
+        lines.append(f"=== {header} ===")
+
+        for course in sem.get('courses', []):
+            if not isinstance(course, dict):
+                continue
+            if course.get('type') == 'group':
+                # OR-groups: list each option with "OR" separators, indented
+                groups = course.get('courses', [])
+                if not isinstance(groups, list):
+                    continue
+                or_lines = []
+                for or_group in groups:
+                    if not isinstance(or_group, list):
+                        continue
+                    for inner in or_group:
+                        ln = fmt_course(inner)
+                        if ln:
+                            or_lines.append(ln)
+                    or_lines.append("-- OR --")
+                # Remove trailing OR separator
+                while or_lines and or_lines[-1].strip() == "-- OR --":
+                    or_lines.pop()
+                for ln in or_lines:
+                    if ln == "-- OR --":
+                        lines.append("    -- OR --")
+                    else:
+                        lines.append("  [choose one] " + ln)
+            else:
+                ln = fmt_course(course)
+                if ln:
+                    lines.append("  " + ln)
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # =====================================================================
 # GUARDRAIL PATTERNS — compiled once at import time, not per-request
 # =====================================================================
@@ -397,10 +503,35 @@ def chatbot():
         personal_plan = data.get('personal_plan', '')
         chat_mode = data.get('chat_mode', 'catalog')
 
-        # Pick model based on whether the user pasted a personal degree plan.
+        # The frontend now sends the structured JSON envelope the app exports
+        # (see utils/planStorage.js on the client). We parse it server-side
+        # and compact it into a clean labeled text block — LLMs follow that
+        # better than raw JSON, especially on the 8B model, and it cuts
+        # token count substantially on large plans.
+        #
+        # Backwards-compatible: if the payload isn't JSON (older client, or
+        # someone pasted plaintext), we pass it through unchanged. The
+        # legend below covers both shapes.
+        plan_is_structured = False
+        if personal_plan and personal_plan.strip().startswith('{'):
+            try:
+                env = json.loads(personal_plan)
+                personal_plan = _format_plan_envelope(env)
+                plan_is_structured = True
+            except Exception as e:
+                print(f"[chat] failed to parse plan envelope, using as-is: {e}")
+                # Fall through and treat as plaintext.
+
+        # Truncate to keep prompt under context limit. 8000 chars ~ 2k tokens
+        # which leaves room for course data + history + system prompt on a
+        # 4k/8k context model.
+        if personal_plan and len(personal_plan) > 8000:
+            personal_plan = personal_plan[:8000] + "\n... [plan truncated — ask about specific semesters or courses]"
+
+        # Pick model based on whether the user supplied a personal degree plan.
         # Plan queries (remaining credits, what's left, etc.) need the 70B.
         selected_model = pick_model(personal_plan)
-        print(f"[chat] model={selected_model} plan_len={len(personal_plan or '')}")
+        print(f"[chat] model={selected_model} plan_len={len(personal_plan or '')} structured={plan_is_structured}")
 
         # GUARDRAIL 1: Input length
         MAX_INPUT_LENGTH = 500
@@ -496,29 +627,41 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
         else:
             plan_section = personal_plan if personal_plan else "The student has not provided a personal degree plan. Answer based on general catalog knowledge."
             plan_format_legend = """HOW TO READ THE PERSONAL DEGREE PLAN (if one is provided above):
-- The plan is grouped by semester. Each semester header looks like: "━━━ Level - Term ━━━" (e.g. "━━━ Freshman - Fall ━━━").
-- Each course line has this exact format:
-    SUBJECT NUMBER - Course Name (N cr) [status]
+- The plan starts with "PROGRAM:" (and optionally "MINOR:") then lists semesters.
+- Each semester has a header like "=== Freshman - Fall ===" or "=== Junior - Winter ===".
+- Under each header, each course is indented two spaces and uses this exact format:
+      SUBJECT NUMBER - Course Name [Ncr, status]
   Examples:
-    CIS 1100 - Introduction to Programming (3 cr) [completed]
-    MTH 1410 - Calculus I (4 cr) [in progress]
-    ENGR 3120 - Statics (3 cr)
-- "cr" means CREDIT HOURS. "(3 cr)" means the course is worth 3 credit hours. It is NOT a course code and NOT a count of courses.
-- The bracketed tag at the end is the STATUS:
-    [completed]    = the student has already passed this course
-    [in progress]  = the student is taking it right now
-    no tag         = planned / upcoming / not yet taken
-- A line that starts with "Elective" (instead of a subject code) means the student chooses any course meeting that category.
-- "— OR —" between two courses means the student picks ONE of them, not both. Only count ONE toward credits.
-- The same course code may appear more than once in the plan (e.g. listed in multiple semesters, or as an OR option). Treat duplicates of the SAME subject+number as a SINGLE course — do NOT double-count its credits.
+      BIO 1200 - General Biology I [3cr, completed]
+      MTH 1410 - Calculus I [4cr, in progress]
+      CSSE 1710 - Introduction to Programming I [3cr, upcoming]
+- "Ncr" means CREDIT HOURS. "[3cr, ...]" means the course is worth 3 credit hours.
+  It is NOT a count of courses and NOT a course code.
+- The second field inside the brackets is the STATUS. Possible values:
+      completed     — the student has already passed this course (counts toward earned credits)
+      in progress   — the student is currently enrolled
+      planned       — the student plans to take it
+      upcoming      — no status set yet / planned / not yet taken (TREAT SAME AS planned)
+      failed        — attempted but did not pass (does NOT count toward completed)
+      substituted, waived, transferred — treat these THREE as equivalent to completed
+- A line whose code is "Elective" (not a real subject) means the student chooses any course in that category. Count its credits exactly once.
+- Lines prefixed with "[choose one]" are OR-group alternatives. The student takes ONLY ONE of them.
+  Count credits for exactly ONE option in each OR-group, not all of them.
+- A course may appear as "(note: ...)" at the end — that's a student note, not a separate course.
+- The SAME subject+number may appear in multiple places (e.g. an OR option re-listed, or a re-take after a failed attempt). De-duplicate by subject+number when summing credits.
 
 HOW TO ANSWER CREDIT QUESTIONS:
-- "Remaining credits" / "credits left" / "how many credits to graduate" means: the SUM of credit hours of courses that are NOT marked [completed]. Add up every "(N cr)" value for non-completed courses. Handle OR-groups by counting only ONE option. De-duplicate by subject+number before summing. Return a single total number, e.g. "You have 47 credits remaining."
-- "Completed credits" / "credits earned" means: the SUM of credit hours of courses marked [completed]. Same de-duplication rule.
-- "In-progress credits" means: the SUM for courses marked [in progress].
-- "Total credits for the degree" means: completed + in-progress + remaining.
-- If the user asks WHICH courses are left (not the credit total), THEN list them — but still de-duplicate by subject+number and still collapse OR-groups to a single choice.
-- Always show your arithmetic briefly when giving a total (e.g. "3+4+4+3 + ... = 47 credits").
+- "Remaining credits" / "credits left" / "how many credits to graduate" means:
+    SUM of credit hours of courses that are NOT completed (and not substituted/waived/transferred).
+    Handle OR-groups by counting ONE option only. De-duplicate by subject+number.
+    Return a single total number, e.g. "You have 47 credits remaining."
+- "Completed credits" / "credits earned" means:
+    SUM of credit hours of courses marked completed, substituted, waived, or transferred.
+- "In-progress credits" means: SUM for courses marked in progress.
+- "Total credits for the degree" means: completed + in progress + remaining (all non-failed, with OR-groups and dedup rules applied).
+- If the user asks WHICH courses are left (not a credit total), THEN list them — but still dedup by subject+number and still collapse OR-groups to a single choice.
+- Always show your arithmetic briefly when giving a total (e.g. "3+4+4+3+...=47 credits").
+- If a course has status "failed", it does NOT count as completed. If it was retaken and there's a later entry with the same subject+number marked "completed", count ONLY the completed version.
 """
 
             system_prompt = f"""You are a strict academic advisor assistant exclusively for the University of Detroit Mercy (UDM).
