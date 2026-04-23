@@ -625,8 +625,18 @@ def chatbot():
             course_summary = client_course_summary[:12000]
             if len(client_course_summary) > 12000:
                 course_summary += "\n... [truncated — use tools for more details]"
+            course_summary_source = "client"
         else:
             course_summary = build_course_summary()
+            course_summary_source = "server_cache"
+
+        # Log a short sample so we can see what the model actually received.
+        # This is the best way to diagnose "model invented courses" — if the
+        # summary is empty or missing lines the model should have, that's
+        # upstream of the LLM.
+        _sample = (course_summary or "").splitlines()
+        _sample_str = " | ".join(_sample[:3])[:200]
+        print(f"[chat] course_data source={course_summary_source} lines={len(_sample)} chars={len(course_summary or '')} sample={_sample_str!r}")
 
         # =====================================================================
         # BUILD SYSTEM PROMPT — adapts based on chat_mode
@@ -716,6 +726,11 @@ YOUR ONLY PURPOSE:
 - The student is looking at courses for: {term_name or 'the current term'}.
 - Use the available tools to look up prerequisites and corequisites when students ask about them.
 
+HOW TO USE TOOLS:
+- Only call a tool when the user asks about one specific course's prerequisites / corequisites that aren't already shown in the COURSE DATA.
+- If a user asks a broad question like "do any of these courses have prerequisites?" or "list prereqs for all of them", pick AT MOST 2-3 representative courses and call the tool for those. Do NOT call the tool 10 times in one turn — that's too many parallel lookups and wastes their time.
+- NEVER output tool-call JSON as a message to the user. If you can't make a proper tool call, answer in plain English instead.
+
 STUDENT'S PERSONAL DEGREE PLAN:
 {plan_section}
 
@@ -723,6 +738,15 @@ STUDENT'S PERSONAL DEGREE PLAN:
 
 COURSE DATA (from UDM's current catalog):
 {course_summary}
+
+HOW TO READ THE COURSE DATA:
+- Each line that starts at the LEFT margin like "CIS 1100: Intro to Programming (3 cr)" is one UNIQUE COURSE.
+- The INDENTED lines below it that start with "Sec 01", "Sec 02", etc. are SECTIONS of that same course.
+- A course with multiple sections is still one course. The greeting message says "N sections loaded" where N is the total section count, not the course count. They are different numbers and both are legitimate.
+- If asked "how many courses", count only the LEFT-MARGIN lines (the course headers).
+- If asked "how many sections", count the "Sec ..." lines OR add up section counts per course.
+- NEVER invent a course that isn't listed. If a course number appears only in your memory from training but not in the COURSE DATA above, it is NOT loaded in this conversation. Say "that course isn't in the current data" rather than describe it.
+- NEVER invent a course title. The title is whatever appears AFTER the colon on the course header line. If the header says "CIS 1010: Applications of Info Tech" then the title is "Applications of Info Tech" — not whatever the course number sounds like.
 
 ABSOLUTE RULES YOU MUST NEVER BREAK:
 1. ONLY answer questions directly related to UDM academics, courses, scheduling, degree plans, prerequisites, and campus academic life.
@@ -778,25 +802,76 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
             tool_calls = getattr(assistant_msg, 'tool_calls', None) or []
             assistant_content = (assistant_msg.content or '').strip() if hasattr(assistant_msg, 'content') else ''
 
-            # --- ADD THIS FALLBACK PARSER ---
-            # Catches Llama-3.1 outputting tool calls directly in the text content
-            if not tool_calls and assistant_content.startswith('{') and '"name"' in assistant_content and '"arguments"' in assistant_content:
+            # --- FALLBACK PARSER ---
+            # Some Llama 3 variants emit tool calls as text in the `content`
+            # field instead of as a proper `tool_calls` structure. We've
+            # seen three shapes in the wild:
+            #   (a) a single JSON object:            {"name": "...", "arguments": {...}}
+            #   (b) a JSON array:                    [{"name": "..."}, {"name": "..."}]
+            #   (c) semicolon-separated objects:     {...}; {...}; {...}
+            # Handle all three. Anything we can't parse falls through unchanged.
+            if (not tool_calls
+                and assistant_content
+                and ('"name"' in assistant_content and '"arguments"' in assistant_content)
+                and (assistant_content.lstrip().startswith('{') or assistant_content.lstrip().startswith('['))):
                 try:
-                    clean_content = assistant_content.replace('```json', '').replace('```', '').strip()
-                    parsed = json.loads(clean_content)
-                    
-                    if "name" in parsed and "arguments" in parsed:
-                        args_str = json.dumps(parsed["arguments"]) if isinstance(parsed["arguments"], dict) else str(parsed["arguments"])
-                        mock_tc = SimpleNamespace(
+                    clean = assistant_content.replace('```json', '').replace('```', '').strip()
+
+                    parsed_list = []
+                    if clean.startswith('['):
+                        # Shape (b): JSON array.
+                        arr = json.loads(clean)
+                        if isinstance(arr, list):
+                            parsed_list = arr
+                    else:
+                        # Try shape (a) first.
+                        try:
+                            one = json.loads(clean)
+                            parsed_list = [one]
+                        except Exception:
+                            # Shape (c): split on top-level semicolons. Simple
+                            # split is fine here — arguments are flat dicts of
+                            # strings/ints in this app, so no nested semicolons.
+                            parsed_list = []
+                            for chunk in clean.split(';'):
+                                chunk = chunk.strip()
+                                if not chunk:
+                                    continue
+                                try:
+                                    parsed_list.append(json.loads(chunk))
+                                except Exception as e:
+                                    print(f"Fallback sub-parse skipped chunk: {e}")
+
+                    # Convert each parsed dict into a mock tool_call.
+                    mocks = []
+                    for p in parsed_list:
+                        if not isinstance(p, dict):
+                            continue
+                        # Some models wrap it as {"type":"function","name":...,"arguments":...}
+                        # and some as {"type":"function","function":{"name":...,"arguments":...}}
+                        fn_name = p.get("name")
+                        fn_args = p.get("arguments")
+                        if not fn_name and isinstance(p.get("function"), dict):
+                            fn_name = p["function"].get("name")
+                            fn_args = p["function"].get("arguments")
+                        if not fn_name:
+                            continue
+                        args_str = json.dumps(fn_args) if isinstance(fn_args, dict) else (str(fn_args) if fn_args is not None else "{}")
+                        mocks.append(SimpleNamespace(
                             id=f"call_{uuid.uuid4().hex[:8]}",
                             type="function",
-                            function=SimpleNamespace(
-                                name=parsed["name"],
-                                arguments=args_str
-                            )
-                        )
-                        tool_calls = [mock_tc]
-                        assistant_content = "" 
+                            function=SimpleNamespace(name=fn_name, arguments=args_str),
+                        ))
+
+                    if mocks:
+                        # Cap at 8 calls per turn so a hallucinated huge list
+                        # doesn't spam the upstream service.
+                        tool_calls = mocks[:8]
+                        if len(mocks) > 8:
+                            print(f"Fallback: truncated {len(mocks)} tool calls to 8")
+                        assistant_content = ""
+                    else:
+                        print("Fallback: recognized JSON-looking content but found no tool calls in it")
                 except Exception as e:
                     print(f"Fallback parse failed: {e}")
             # --- END FALLBACK PARSER ---
