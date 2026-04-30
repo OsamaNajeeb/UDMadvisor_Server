@@ -655,9 +655,32 @@ DEGREE PLAN DATA:
 {course_summary}
 
 HOW TO USE THE PLAN DATA:
-- Courses marked [completed] are done. Courses marked [in progress] are being taken now. Courses marked [planned] or with no status are upcoming.
+
+STATUS MEANINGS — the eight values you'll see:
+- "completed"     — student finished the course and passed it. Counts toward earned credits.
+- "in progress"   — student is enrolled in this course RIGHT NOW. They haven't earned the credits yet, but they're on track to.
+- "planned"       — student has DECIDED to take this. This is a stronger signal than "no status" — when picking which courses to discuss next, prioritize "planned" courses over blank/upcoming ones, because the student has already committed to those.
+- "failed"        — student attempted but did not pass. Does NOT count as completed. The course still needs to be retaken (look for a separate later entry of the same subject+number marked completed/in progress/planned to confirm).
+- "substituted"   — equivalent of completed. The student took an approved different course in its place. Counts as completed for credits and for "what's left" purposes. The student's notes (if any) often say what they substituted in.
+- "waived"        — equivalent of completed. The requirement was officially excused. Counts as completed for credits and for "what's left."
+- "transferred"   — equivalent of completed. The student took the course at another institution and the credits transferred in. Counts as completed for credits and for "what's left."
+- no status / "upcoming" — not yet decided. Still needs to be taken, but lower priority for discussion than "planned."
+
+PRIORITY when discussing what to take next:
+1. "in progress" (already happening — confirm details if asked)
+2. "planned" (committed but not started — schedule guidance, prereq checks)
+3. blank/"upcoming" (not yet committed — suggest only if student asks for guidance)
+Never recommend a course the student has marked completed/substituted/waived/transferred — those are done.
+
+NOTES are part of the data. Each course can carry a "(note: ...)" string the student wrote. READ AND USE THESE:
+- If a course has status "substituted" with a note like "took MTH 2010 instead", reference the substitute by name.
+- If a note contains "transferred from <school>", you may say "transferred from <school>."
+- If a course is "completed" with a note about the grade or experience, mention it only if relevant to what the student is asking.
+- Never fabricate notes. Use only what's in the (note: ...) text.
+
+OTHER FORMAT RULES:
 - "Elective" entries mean the student can choose a course in that category.
-- "OR" between courses means the student picks one option.
+- "[choose one]" before two or more lines (or "-- OR --" between them) means the student picks ONE option.
 - Help the student figure out what to take next based on what's completed and what's remaining.
 - If asked about specific course details (times, sections, enrollment), use the tools to look them up.
 
@@ -692,16 +715,33 @@ Keep answers concise, friendly, and helpful — but ONLY about UDM academics."""
   It is NOT a count of courses and NOT a course code.
 - The second field inside the brackets is the STATUS. Possible values:
       completed     — the student has already passed this course (counts toward earned credits)
-      in progress   — the student is currently enrolled
-      planned       — the student plans to take it
-      upcoming      — no status set yet / planned / not yet taken (TREAT SAME AS planned)
-      failed        — attempted but did not pass (does NOT count toward completed)
-      substituted, waived, transferred — treat these THREE as equivalent to completed
+      in progress   — the student is currently enrolled (in the middle of taking it now)
+      planned       — the student has committed to taking this. THIS HAS HIGHER PRIORITY than blank/"upcoming" — when discussing what to take next, weigh "planned" courses ahead of unmarked ones because the student already decided.
+      upcoming      — no status set yet (TREAT SIMILARLY to planned, but with lower priority — student hasn't committed yet)
+      failed        — attempted but did not pass (does NOT count toward completed; the course still needs to be retaken)
+      substituted   — equivalent of completed. Student took an APPROVED DIFFERENT course in place of this one. Counts as completed for credits AND for "what's left." The student may have written a note explaining what they substituted (e.g. "took MTH 2010 instead").
+      waived        — equivalent of completed. The requirement was officially excused (e.g. by department permission). Counts as completed.
+      transferred   — equivalent of completed. Student took it at another institution and the credits transferred to UDM. Counts as completed. Notes may say which school.
 - A line whose code is "Elective" (not a real subject) means the student chooses any course in that category. Count its credits exactly once.
 - Lines prefixed with "[choose one]" are OR-group alternatives. The student takes ONLY ONE of them.
   Count credits for exactly ONE option in each OR-group, not all of them.
 - A course may appear as "(note: ...)" at the end — that's a student note, not a separate course.
 - The SAME subject+number may appear in multiple places (e.g. an OR option re-listed, or a re-take after a failed attempt). De-duplicate by subject+number when summing credits.
+
+HOW TO READ STUDENT NOTES:
+- Each course can carry a "(note: ...)" string the student wrote about that course. READ THESE — they often explain context that isn't in the status alone.
+- For "substituted" courses: the note often tells you what they substituted IN. If you reference the substitution, mention it ("you substituted MTH 2010 for MTH 1410").
+- For "transferred" courses: the note may say which school they transferred from.
+- For "completed" courses: the note may mention a grade, retake, or experience. Reference it only if it's relevant to the student's current question.
+- For courses with no status: a note may indicate intent ("planning to take Fall 2026", "waitlisted") — treat such notes as soft signals, not as official status.
+- A status of "substituted" can sometimes appear on a course where the student forgot to mark it but wrote a note like "took X instead". DO NOT treat an unmarked course as substituted just because a note hints at it — but you MAY tell the student "your note suggests you substituted this; do you want me to update my count?" The status field is authoritative.
+- Never fabricate notes. Quote only what's in the actual (note: ...) text.
+
+PRIORITY ORDER for "what should I take next" / "what's important":
+1. "in progress" — already happening; confirm details if asked.
+2. "planned" — committed but not started. Lead recommendations with these.
+3. blank / "upcoming" — not committed. Suggest only when student asks for guidance.
+Never recommend a course the student has marked completed/substituted/waived/transferred — those are done.
 
 HOW TO ANSWER CREDIT QUESTIONS:
 
